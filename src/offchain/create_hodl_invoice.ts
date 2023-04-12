@@ -197,9 +197,9 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
 
           const forwardMtokens = BigInt(probe.route.mtokens);
 
-          const fee = BigInt(serviceFee) + baseFeeMtokens + (forwardMtokens * feeRate) / rateDivisor;
+          const fee = baseFeeMtokens + (forwardMtokens * feeRate) / rateDivisor;
 
-          return cbk(null, { mtokens: fee.toString() });
+          return cbk(null, { mtokens: (BigInt(serviceFee) + fee).toString() });
         },
       ],
 
