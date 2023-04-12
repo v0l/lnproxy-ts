@@ -35,6 +35,7 @@ type Args = {
   lnd: AuthenticatedLnd;
   request: string;
   fee: number;
+  feeInclusive: boolean;
 };
 type Tasks = {
   validate: undefined;
@@ -49,7 +50,7 @@ type Tasks = {
   hodlInvoice: CreateHodlInvoiceResult;
   subscribe: undefined;
 };
-export default async function ({ lnd, request, fee: serviceFee }: Args) {
+export default async function ({ lnd, request, fee: serviceFee, feeInclusive }: Args) {
   return (
     await auto<Tasks>({
       validate: (cbk: any) => {
@@ -65,7 +66,7 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
       },
 
       // Get the fee rates to find the fee for the relay
-      getFees: ['validate', ({}, cbk: any) => getFeeRates({ lnd }, cbk)],
+      getFees: ['validate', ({ }, cbk: any) => getFeeRates({ lnd }, cbk)],
 
       details: [
         'validate',
@@ -162,7 +163,7 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
       ],
 
       // Get the current height
-      getHeight: ['probe', ({}, cbk: any) => getHeight({ lnd }, cbk)],
+      getHeight: ['probe', ({ }, cbk: any) => getHeight({ lnd }, cbk)],
 
       // Calculate the fee to charge for the relay
       fee: [
@@ -212,11 +213,13 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
           const cltvDelta =
             probe.route.timeout - getHeight.current_block_height;
 
-          const amounts = [details.mtokens, fee.mtokens].map((n) => BigInt(n));
+          if (feeInclusive && BigInt(fee.mtokens) >= BigInt(serviceFee)) {
+            throw new Error('ServiceFeeLowerThanRoutingFee');
+          }
+          const totalFee = [fee.mtokens, serviceFee].reduce((acc, v) => acc + BigInt(v), BigInt(0));
 
-          const mtokens =
-            amounts.reduce((sum, n) => sum + n, BigInt(Number())) +
-            BigInt(serviceFee);
+          const totalAmount = BigInt(details.mtokens)
+            + (feeInclusive ? BigInt(serviceFee) : totalFee);
 
           return await createHodlInvoice({
             lnd,
@@ -224,7 +227,7 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
             description: details.description,
             description_hash: details.description_hash,
             id: details.id,
-            mtokens: String(mtokens),
+            mtokens: String(totalAmount),
             expires_at: hodlExpiry(details.expires_at),
           });
         },

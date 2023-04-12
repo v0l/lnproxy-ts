@@ -27,11 +27,12 @@ export class AppService implements OnModuleInit {
     try {
       const { lnd } = await authenticatedLnd({});
 
-      return await createHodlInvoice({
+      const result = await createHodlInvoice({
         lnd,
-        request: args.request,
-        fee: args.fee
+        ...args
       });
+      Logger.log("Created wrapped invoice {result}", { result });
+      return result;
     } catch (error: any) {
       httpLogger({ error });
     }
