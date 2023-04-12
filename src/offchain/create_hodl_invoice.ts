@@ -21,7 +21,6 @@ const dateDiff = (m: string, n: string) =>
 const defaultBaseFee = 1000;
 const defaultFeeRate = 2500;
 const defaultCltvDelta = 80;
-const defaultPremium = 2000;
 const defaultProbeTimeoutMs = 1000 * 60 * 5;
 const hodlExpiry = (m: string) =>
   new Date(new Date(m).getTime() + 3600 * 1000).toISOString();
@@ -199,7 +198,7 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
 
           const fee = baseFeeMtokens + (forwardMtokens * feeRate) / rateDivisor;
 
-          return cbk(null, { mtokens: (BigInt(serviceFee) + fee).toString() });
+          return cbk(null, { mtokens: fee.toString() });
         },
       ],
 
@@ -217,7 +216,7 @@ export default async function ({ lnd, request, fee: serviceFee }: Args) {
 
           const mtokens =
             amounts.reduce((sum, n) => sum + n, BigInt(Number())) +
-            BigInt(defaultPremium);
+            BigInt(serviceFee);
 
           return await createHodlInvoice({
             lnd,
