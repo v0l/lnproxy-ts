@@ -79,9 +79,13 @@ export default async function ({ lnd, request, fee: serviceFee, feeInclusive, sk
     }
   });
 
-  const invoice = await getInvoice({ lnd, id: details.id });
-  if (invoice) {
+  try {
+    await getInvoice({ lnd, id: details.id });
     throw new AlreadyExistsError('InvoiceWithPaymentHashAlreadyExists');
+  } catch (e) {
+    if (e instanceof AlreadyExistsError) {
+      throw e; // only throw if expected error kind
+    }
   }
 
   let cltvDelta = 0;
