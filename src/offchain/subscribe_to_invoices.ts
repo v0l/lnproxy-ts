@@ -54,7 +54,7 @@ export default function ({ expiry, id, lnd, maxFee, request }: Args) {
     sub.on('invoice_updated', async (req: SubscribeToInvoiceInvoiceUpdatedEvent) => {
       try {
         Logger.log(req.payments);
-        const paid = req.payments.filter(v => v.is_confirmed).reduce((acc, v) => acc + BigInt(v.mtokens), BigInt(0));
+        const paid = req.payments.filter(v => v.is_held).reduce((acc, v) => acc + BigInt(v.mtokens), BigInt(0));
         const minAmount = BigInt(req.mtokens);
         if (paid >= minAmount) {
           Logger.log(`Attempting payment: ${id}, maxFee=${maxFee}`);
