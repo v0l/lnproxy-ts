@@ -35,6 +35,7 @@ const rateDivisor = BigInt(1e6);
 type Args = {
   lnd: AuthenticatedLnd;
   request: string;
+  fee: number;
 };
 type Tasks = {
   validate: undefined;
@@ -49,7 +50,7 @@ type Tasks = {
   hodlInvoice: CreateHodlInvoiceResult;
   subscribe: undefined;
 };
-export default async function ({ lnd, request }: Args) {
+export default async function ({ lnd, request, fee: serviceFee }: Args) {
   return (
     await auto<Tasks>({
       validate: (cbk: any) => {
@@ -196,7 +197,7 @@ export default async function ({ lnd, request }: Args) {
 
           const forwardMtokens = BigInt(probe.route.mtokens);
 
-          const fee = baseFeeMtokens + (forwardMtokens * feeRate) / rateDivisor;
+          const fee = BigInt(serviceFee) + baseFeeMtokens + (forwardMtokens * feeRate) / rateDivisor;
 
           return cbk(null, { mtokens: fee.toString() });
         },

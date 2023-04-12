@@ -30,6 +30,7 @@ export class AppService implements OnModuleInit {
       return await createHodlInvoice({
         lnd,
         request: args.request,
+        fee: args.fee
       });
     } catch (error: any) {
       httpLogger({ error });
