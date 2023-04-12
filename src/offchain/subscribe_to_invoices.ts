@@ -7,6 +7,7 @@ import {
 } from 'lightning';
 
 import { auto } from 'async';
+import { Logger } from '@nestjs/common';
 
 type Args = {
   expiry: string;
@@ -36,7 +37,7 @@ export default async function ({ expiry, id, lnd, maxFee, request }: Args) {
     // Intercept virtual invoice forwards
     subscribe: [
       'validate',
-      ({}, cbk: any) => {
+      ({ }, cbk: any) => {
         const sub = subscribeToInvoice({ id, lnd });
 
         // Stop listening for the HTLC when the invoice expires
@@ -48,6 +49,7 @@ export default async function ({ expiry, id, lnd, maxFee, request }: Args) {
 
         const finished = async (err: any, res?: any) => {
           clearTimeout(timeout);
+          Logger.log(`Payment finished: ${id}`, err, res);
 
           sub.removeAllListeners();
 
@@ -65,12 +67,14 @@ export default async function ({ expiry, id, lnd, maxFee, request }: Args) {
         sub.on('invoice_updated', async (req) => {
           try {
             if (!!req.payments && req.payments.length) {
+              Logger.log(`Attempting payment: ${id}, maxFee=${maxFee}`);
               const result = await payViaPaymentRequest({
                 lnd,
                 request,
                 max_fee: maxFee,
               });
 
+              Logger.log(`Payment result: ${id}`, result);
               if (!!result.secret) {
                 await settleHodlInvoice({ lnd, secret: result.secret });
                 await finished(null, req);
