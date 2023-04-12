@@ -5,7 +5,7 @@ import { invoiceDto } from './class_controller';
 
 @Controller()
 export class AppController {
-  constructor(private readonly appService: AppService) {}
+  constructor(private readonly appService: AppService) { }
 
   @Post()
   async getInvoice(@Body() args: invoiceDto): Promise<any> {

@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { authenticatedLnd } from './lnd';
 import { createHodlInvoice } from './offchain';
-import { getWalletInfo } from 'lightning';
+import { CreateHodlInvoiceResult, getWalletInfo } from 'lightning';
 import { httpLogger } from './utils';
 import { invoiceDto } from './class_controller';
 
@@ -23,18 +23,16 @@ export class AppService implements OnModuleInit {
     }
   }
 
-  async getInvoice(args: invoiceDto): Promise<any> {
+  async getInvoice(args: invoiceDto): Promise<CreateHodlInvoiceResult> {
     try {
       const { lnd } = await authenticatedLnd({});
 
-      const result = await createHodlInvoice({
+      return await createHodlInvoice({
         lnd,
         ...args
       });
-      Logger.log("Created wrapped invoice {result}", { result });
-      return result;
-    } catch (error: any) {
-      httpLogger({ error });
+    } catch (error) {
+      httpLogger(error);
     }
   }
 }

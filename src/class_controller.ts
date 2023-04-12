@@ -7,4 +7,6 @@ export class invoiceDto {
   fee: number;
   @IsBoolean()
   feeInclusive: boolean;
+  @IsBoolean()
+  skipProbe: boolean;
 }

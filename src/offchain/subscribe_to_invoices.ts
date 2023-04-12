@@ -1,13 +1,13 @@
 import {
   AuthenticatedLnd,
+  SubscribeToInvoiceInvoiceUpdatedEvent,
   cancelHodlInvoice,
   payViaPaymentRequest,
   settleHodlInvoice,
   subscribeToInvoice,
 } from 'lightning';
-
-import { auto } from 'async';
 import { Logger } from '@nestjs/common';
+import { TimeoutError, ValidationError } from '.';
 
 type Args = {
   expiry: string;
@@ -16,81 +16,64 @@ type Args = {
   request: string;
   maxFee: number;
 };
-export default async function ({ expiry, id, lnd, maxFee, request }: Args) {
-  await auto({
-    validate: (cbk: any) => {
-      if (!expiry) {
-        return cbk([400, 'ExpectedHodlInvoiceExpiryToSubscribeToInvoices']);
+
+export default function ({ expiry, id, lnd, maxFee, request }: Args) {
+  if (!expiry) {
+    throw new ValidationError('ExpectedHodlInvoiceExpiryToSubscribeToInvoices');
+  }
+  if (!id) {
+    throw new ValidationError('ExpectedInvoiceIdToSubscribeToInvoices');
+  }
+  if (!lnd) {
+    throw new ValidationError('ExpectedAuthenticatedLndToSubscribeToInvoices');
+  }
+  return new Promise<void>((resolve, reject) => {
+    const sub = subscribeToInvoice({ id, lnd });
+
+    // Stop listening for the HTLC when the invoice expires
+    const timeout = setTimeout(async () => {
+      sub.removeAllListeners();
+      await finished(new TimeoutError('TimedOutWaitingForPayment'));
+    }, new Date(expiry).getTime() - new Date().getTime());
+
+    const finished = async (err?: Error, res?: SubscribeToInvoiceInvoiceUpdatedEvent) => {
+      clearTimeout(timeout);
+      Logger.log(`Payment finished: ${id}`, err, res);
+      sub.removeAllListeners();
+
+      if (err || (!err && !res)) {
+        try {
+          await cancelHodlInvoice({ id, lnd });
+        } catch (err) {
+          return reject(err);
+        }
       }
+      resolve();
+    };
 
-      if (!id) {
-        return cbk([400, 'ExpectedInvoiceIdToSubscribeToInvoices']);
-      }
+    sub.on('invoice_updated', async (req: SubscribeToInvoiceInvoiceUpdatedEvent) => {
+      try {
+        Logger.log(req.payments);
+        const paid = req.payments.filter(v => v.is_confirmed).reduce((acc, v) => acc + BigInt(v.mtokens), BigInt(0));
+        const minAmount = BigInt(req.mtokens);
+        if (paid >= minAmount) {
+          Logger.log(`Attempting payment: ${id}, maxFee=${maxFee}`);
+          const result = await payViaPaymentRequest({
+            lnd,
+            request,
+            max_fee: maxFee,
+          });
 
-      if (!lnd) {
-        return cbk([400, 'ExpectedAuthenticatedLndToSubscribeToInvoices']);
-      }
-
-      return cbk();
-    },
-
-    // Intercept virtual invoice forwards
-    subscribe: [
-      'validate',
-      ({ }, cbk: any) => {
-        const sub = subscribeToInvoice({ id, lnd });
-
-        // Stop listening for the HTLC when the invoice expires
-        const timeout = setTimeout(() => {
-          sub.removeAllListeners();
-
-          return cbk([408, 'TimedOutWaitingForPayment']);
-        }, new Date(expiry).getTime() - new Date().getTime());
-
-        const finished = async (err: any, res?: any) => {
-          clearTimeout(timeout);
-          Logger.log(`Payment finished: ${id}`, err, res);
-
-          sub.removeAllListeners();
-
-          if (!!err || (!err && !res)) {
-            try {
-              await cancelHodlInvoice({ id, lnd });
-            } catch (err) {
-              return cbk(err);
-            }
+          Logger.log(`Payment result: ${id}`, result);
+          if (result.secret) {
+            await settleHodlInvoice({ lnd, secret: result.secret });
+            await finished(undefined, req);
           }
+        }
+      } catch (err) {
+        await finished(err as Error);
+      }
+    });
+  })
 
-          return cbk(err, res);
-        };
-
-        sub.on('invoice_updated', async (req) => {
-          try {
-            if (!!req.payments && req.payments.length) {
-              Logger.log(`Attempting payment: ${id}, maxFee=${maxFee}`);
-              const result = await payViaPaymentRequest({
-                lnd,
-                request,
-                max_fee: maxFee,
-              });
-
-              Logger.log(`Payment result: ${id}`, result);
-              if (!!result.secret) {
-                await settleHodlInvoice({ lnd, secret: result.secret });
-                await finished(null, req);
-              }
-            }
-          } catch (err) {
-            await finished(err);
-          }
-        });
-
-        sub.on('error', async (err) => {
-          await finished(err);
-        });
-
-        return;
-      },
-    ],
-  });
 }

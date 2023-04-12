@@ -1,251 +1,140 @@
 import {
   AuthenticatedLnd,
-  CreateHodlInvoiceResult,
-  DecodePaymentRequestResult,
-  GetFeeRatesResult,
-  GetHeightResult,
-  ProbeForRouteResult,
   createHodlInvoice,
   decodePaymentRequest,
-  getFeeRates,
   getHeight,
   getInvoice,
   probeForRoute,
 } from 'lightning';
 
-import { auto } from 'async';
 import subscribeToInvoices from './subscribe_to_invoices';
+import { AlreadyExistsError, FeeTooLowError, NoRouteError, ValidationError } from '.';
+import { Logger } from '@nestjs/common';
 
 const dateDiff = (m: string, n: string) =>
   Math.abs((new Date(m).getTime() - new Date(n).getTime()) / 1000);
-const defaultBaseFee = 1000;
-const defaultFeeRate = 2500;
+
 const defaultCltvDelta = 80;
-const defaultProbeTimeoutMs = 1000 * 60 * 5;
+const defaultProbeTimeoutMs = 1000 * 60 * 2;
 const hodlExpiry = (m: string) => new Date(new Date(m).getTime()).toISOString();
 const knownFeatures = [8, 9, 14, 15, 16, 17];
 const lowCltvDelta = 10;
 const maxCltvDelta = 2016;
 const minDateDiffSec = 60 * 5;
 const minTokens = 1;
-const rateDivisor = BigInt(1e6);
 
-type Args = {
-  lnd: AuthenticatedLnd;
-  request: string;
-  fee: number;
-  feeInclusive: boolean;
-};
-type Tasks = {
-  validate: undefined;
-  getFees: GetFeeRatesResult;
-  details: DecodePaymentRequestResult;
-  getExisting: undefined;
-  probe: ProbeForRouteResult;
-  getHeight: GetHeightResult;
-  fee: {
-    mtokens: string;
-  };
-  hodlInvoice: CreateHodlInvoiceResult;
-  subscribe: undefined;
-};
-export default async function ({ lnd, request, fee: serviceFee, feeInclusive }: Args) {
-  return (
-    await auto<Tasks>({
-      validate: (cbk: any) => {
-        if (!lnd) {
-          return cbk([400, 'ExpectedAuthenticatedLndToCreateHodlInvoice']);
-        }
+interface Args {
+  lnd: AuthenticatedLnd
+  request: string
+  fee: number
+  feeInclusive: boolean
+  skipProbe: boolean
+}
 
-        if (!request) {
-          return cbk([400, 'ExpectedBolt11PaymentRequestToCreateHodlInvoice']);
-        }
+export default async function ({ lnd, request, fee: serviceFee, feeInclusive, skipProbe }: Args) {
+  if (!lnd) {
+    throw new ValidationError('ExpectedAuthenticatedLndToCreateHodlInvoice');
+  }
 
-        return cbk();
-      },
+  if (!request) {
+    throw new ValidationError('ExpectedBolt11PaymentRequestToCreateHodlInvoice');
+  }
 
-      // Get the fee rates to find the fee for the relay
-      getFees: ['validate', ({ }, cbk: any) => getFeeRates({ lnd }, cbk)],
+  const details = await decodePaymentRequest({ lnd, request });
 
-      details: [
-        'validate',
-        async () => {
-          const result = await decodePaymentRequest({ lnd, request });
+  if (!details.cltv_delta) {
+    throw new ValidationError('ExpectedCltvDeltaInThePaymentRequest');
+  }
 
-          if (!result.cltv_delta) {
-            throw new Error('ExpectedCltvDeltaInThePaymentRequest');
-          }
+  if (details.cltv_delta < lowCltvDelta) {
+    throw new ValidationError('ExpectedHigherCltvDeltaInThePaymentRequest');
+  }
 
-          if (result.cltv_delta < lowCltvDelta) {
-            throw new Error('ExpectedHigherCltvDeltaInThePaymentRequest');
-          }
+  if (details.expires_at < new Date().toISOString()) {
+    throw new ValidationError('ExpectedUnexpiredPaymentRequest');
+  }
 
-          if (result.expires_at < new Date().toISOString()) {
-            throw new Error('ExpectedUnexpiredPaymentRequest');
-          }
+  if (
+    dateDiff(details.expires_at, new Date().toISOString()) <
+    minDateDiffSec
+  ) {
+    throw new ValidationError('PaymentRequestExpiresSoon');
+  }
 
-          if (
-            dateDiff(result.expires_at, new Date().toISOString()) <
-            minDateDiffSec
-          ) {
-            throw new Error('PaymentRequestExpiresSoon');
-          }
+  if (details.tokens < minTokens) {
+    throw new ValidationError('ZeroAmountPaymentRequestAreNotAccepted');
+  }
 
-          if (result.tokens < minTokens) {
-            throw new Error('ZeroAmountPaymentRequestAreNotAccepted');
-          }
+  if (!details.features.length) {
+    throw new ValidationError('ExpectedFeatureBitsInPaymentRequest');
+  }
 
-          if (!result.features.length) {
-            throw new Error('ExpectedFeatureBitsInPaymentRequest');
-          }
+  if (details.cltv_delta > maxCltvDelta) {
+    throw new ValidationError('ExpectedLowerCltvDeltaInPaymentReqest');
+  }
 
-          if (result.cltv_delta > maxCltvDelta) {
-            throw new Error('ExpectedLowerCltvDeltaInPaymentReqest');
-          }
+  details.features.forEach((n) => {
+    if (!knownFeatures.includes(n.bit) || !n.is_known) {
+      throw new ValidationError(`UnExpectedFeatureBitInPaymentRequest ${n.type}`);
+    }
+  });
 
-          result.features.forEach((n) => {
-            if (!knownFeatures.includes(n.bit) || !n.is_known) {
-              throw new Error(`UnExpectedFeatureBitInPaymentRequest ${n.type}`);
-            }
-          });
+  const invoice = await getInvoice({ lnd, id: details.id });
+  if (invoice) {
+    throw new AlreadyExistsError('InvoiceWithPaymentHashAlreadyExists');
+  }
 
-          return result;
-        },
-      ],
+  let cltvDelta = 0;
+  let fee = "0";
+  if (!skipProbe) {
+    const probe = await probeForRoute({
+      lnd,
+      cltv_delta: details.cltv_delta,
+      destination: details.destination,
+      features: details.features,
+      mtokens: details.mtokens,
+      payment: details.payment,
+      probe_timeout_ms: defaultProbeTimeoutMs,
+      routes: details.routes,
+      total_mtokens: details.mtokens
+    });
 
-      // Get the invoice to make sure it doesn't exist
-      getExisting: [
-        'details',
-        'validate',
-        ({ details }, cbk: any) => {
-          return getInvoice({ lnd, id: details.id }, (err) => {
-            if (!err) {
-              return cbk([409, 'InvoiceWithPaymentHashAlreadyExists']);
-            }
+    if (!probe.route) {
+      throw new NoRouteError('FailedToFindRouteToPayRequest');
+    }
 
-            return cbk();
-          });
-        },
-      ],
+    const height = await getHeight({ lnd });
+    cltvDelta = probe.route.timeout - height.current_block_height;
+    fee = probe.route.fee_mtokens;
+  }
 
-      // Probe to confirm a path to the destination
-      probe: [
-        'details',
-        'getExisting',
-        ({ details }, cbk: any) => {
-          return probeForRoute(
-            {
-              lnd,
-              cltv_delta: details.cltv_delta,
-              destination: details.destination,
-              features: details.features,
-              mtokens: details.mtokens,
-              payment: details.payment,
-              probe_timeout_ms: defaultProbeTimeoutMs,
-              routes: details.routes.map((n) =>
-                n.map((n) => {
-                  return {
-                    base_fee_mtokens: Number(n.base_fee_mtokens),
-                    channel: n.channel,
-                    cltv_delta: n.cltv_delta,
-                    fee_rate: n.fee_rate,
-                    public_key: n.public_key,
-                  };
-                }),
-              ),
-              total_mtokens: details.mtokens,
-              tokens: details.tokens,
-            },
-            cbk,
-          );
-        },
-      ],
+  const bServiceFee = BigInt(serviceFee);
+  const bFee = BigInt(fee);
 
-      // Get the current height
-      getHeight: ['probe', ({ }, cbk: any) => getHeight({ lnd }, cbk)],
+  if (feeInclusive && bFee >= bServiceFee) {
+    throw new FeeTooLowError('ServiceFeeLowerThanRoutingFee');
+  }
 
-      // Calculate the fee to charge for the relay
-      fee: [
-        'getFees',
-        'probe',
-        ({ getFees, probe }, cbk: any) => {
-          const { route } = probe;
+  const maxFee = feeInclusive ? bServiceFee : bFee + bServiceFee;
+  const totalAmount = BigInt(details.mtokens) + maxFee;
 
-          if (!route) {
-            return cbk([503, 'FailedToFindRouteToPayRequest']);
-          }
+  const result = await createHodlInvoice({
+    lnd,
+    cltv_delta: cltvDelta + defaultCltvDelta,
+    description: details.description,
+    description_hash: details.description_hash,
+    id: details.id,
+    mtokens: String(totalAmount),
+    expires_at: hodlExpiry(details.expires_at),
+  });
 
-          const [{ channel }] = route.hops;
+  subscribeToInvoices({
+    lnd,
+    maxFee: Number(maxFee),
+    request,
+    expiry: hodlExpiry(details.expires_at),
+    id: details.id,
+  }).catch(Logger.error);
 
-          // The fee policy for the relay will be the fee rate for the channel
-          const policyForChannel: any = getFees.channels.find(
-            (n) => n.id === channel,
-          );
-
-          const baseFeeMtokens = BigInt(
-            !!policyForChannel
-              ? policyForChannel.base_fee_mtokens
-              : defaultBaseFee,
-          );
-
-          const feeRate = BigInt(
-            !!policyForChannel
-              ? policyForChannel.base_fee_mtokens
-              : defaultFeeRate,
-          );
-
-          const forwardMtokens = BigInt(probe.route.mtokens);
-
-          const fee = baseFeeMtokens + (forwardMtokens * feeRate) / rateDivisor;
-
-          return cbk(null, { mtokens: fee.toString() });
-        },
-      ],
-
-      hodlInvoice: [
-        'details',
-        'fee',
-        'getHeight',
-        'getExisting',
-        'probe',
-        async ({ details, fee, getHeight, probe }) => {
-          const cltvDelta =
-            probe.route.timeout - getHeight.current_block_height;
-
-          if (feeInclusive && BigInt(fee.mtokens) >= BigInt(serviceFee)) {
-            throw new Error('ServiceFeeLowerThanRoutingFee');
-          }
-          const totalFee = [fee.mtokens, serviceFee].reduce((acc, v) => acc + BigInt(v), BigInt(0));
-
-          const totalAmount = BigInt(details.mtokens)
-            + (feeInclusive ? BigInt(serviceFee) : totalFee);
-
-          return await createHodlInvoice({
-            lnd,
-            cltv_delta: cltvDelta + defaultCltvDelta,
-            description: details.description,
-            description_hash: details.description_hash,
-            id: details.id,
-            mtokens: String(totalAmount),
-            expires_at: hodlExpiry(details.expires_at),
-          });
-        },
-      ],
-
-      subscribe: [
-        'details',
-        'fee',
-        'hodlInvoice',
-        async ({ details, fee }) => {
-          subscribeToInvoices({
-            lnd,
-            maxFee: Number(fee.mtokens),
-            request,
-            expiry: hodlExpiry(details.expires_at),
-            id: details.id,
-          });
-        },
-      ],
-    })
-  ).hodlInvoice;
+  return result;
 }
