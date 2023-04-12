@@ -22,12 +22,11 @@ const defaultBaseFee = 1000;
 const defaultFeeRate = 2500;
 const defaultCltvDelta = 80;
 const defaultProbeTimeoutMs = 1000 * 60 * 5;
-const hodlExpiry = (m: string) =>
-  new Date(new Date(m).getTime() + 3600 * 1000).toISOString();
+const hodlExpiry = (m: string) => new Date(new Date(m).getTime()).toISOString();
 const knownFeatures = [8, 9, 14, 15, 16, 17];
 const lowCltvDelta = 10;
 const maxCltvDelta = 2016;
-const minDateDiffSec = 600;
+const minDateDiffSec = 60 * 5;
 const minTokens = 1;
 const rateDivisor = BigInt(1e6);
 
